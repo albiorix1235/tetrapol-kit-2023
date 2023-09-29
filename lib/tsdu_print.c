@@ -3,6 +3,7 @@
 #include <tetrapol/log.h>
 #include <tetrapol/misc.h>
 #include <tetrapol/tsdu_print.h>
+#include <json-c/json.h>
 
 static const char *codop_str[256] = {
     "N/A",                          // 0x00,
@@ -44,9 +45,9 @@ static const char *codop_str[256] = {
     "U_LOCATION_ACTIVITY",          // 0x24,
     "D_LOCATION_ACTIVITY_ACK",      // 0x25,
     "N/A",                          // 0x26,
-    "N/A",                          // 0x27,
-    "N/A",                          // 0x28,
-    "N/A",                          // 0x29,
+    "U_PERIODIC_ACCESS_SUBSCRIPTION_REQ",    // 0x27,
+    "D_PERIODIC_ACCESS_SUBSCRIPTION_ACK",    // 0x28,
+    "D_PERIODIC_ACCESS_SUBSCRIPTION_NAK",    // 0x29,
     "N/A",                          // 0x2a,
     "N/A",                          // 0x2b,
     "N/A",                          // 0x2c,
@@ -66,8 +67,7 @@ static const char *codop_str[256] = {
     "U_TRANSFER_REQ",               // 0x3a,
     "U_CALL_INTRUSION_ECH",         // 0x3b,
     "U_CALL_RELEASE",               // 0x3c,
-    "U_CALL_CONNECT",               // 0x3d,
-    //"U_CALL_SWITCH",                // 0x3d,
+    "U_CALL_CONNECT_U_CALL_SWITCH", // 0x3d, // U_CALL_CONNECT and U_CALL_SWITCH shall share the same number, cf PAS 0001-3-2 v2.3.9 p.152
     "D_CALL_START",                 // 0x3e,
     "N/A",                          // 0x3f,
     "N/A",                          // 0x40,
@@ -157,9 +157,9 @@ static const char *codop_str[256] = {
     "D_NEIGHBOURING_CELL",          // 0x94,
     "D_ECCH_DESCRIPTION",           // 0x95,
     "D_ADDITIONAL_PARTICIPANTS",    // 0x96,
-    "X_UNKNOWN_97",                 // 0x97,
-    "N/A",                          // 0x98,
-    "N/A",                          // 0x99,
+    "D_DDCH_DESCRIPTION",           // 0x97, // NEW
+    "D_TKG_PRIO_LIST",              // 0x98, // NEW
+    "D_GROUP_MASTER",               // 0x99, // NEW
     "N/A",                          // 0x9a,
     "N/A",                          // 0x9b,
     "N/A",                          // 0x9c,
@@ -199,10 +199,10 @@ static const char *codop_str[256] = {
     "N/A",                          // 0xbe,
     "N/A",                          // 0xbf,
     "N/A",                          // 0xc0,
-    "N/A",                          // 0xc1,
-    "N/A",                          // 0xc2,
+    "UNKNOWN_D_KEY_C1",             // 0xc1,
+    "UNKNOWN_D_KEY_C2",             // 0xc2,
     "N/A",                          // 0xc3,
-    "N/A",                          // 0xc4,
+    "UNKNOWN_D_KEY_C4",             // 0xc4,
     "D_INFORMATION_DELIVERY",       // 0xc5,
     "N/A",                          // 0xc6,
     "N/A",                          // 0xc7,
@@ -261,7 +261,7 @@ static const char *codop_str[256] = {
     "N/A",                          // 0xfc,
     "N/A",                          // 0xfd,
     "N/A",                          // 0xfe,
-    "N/A",                          // 0xff,
+    "D_TTI_ASSIGNMENT",             // 0xff, // arbitrary number assigned here, not in PAS
 };
 
 static const char *cause_str[256] = {
@@ -353,9 +353,9 @@ static const char *cause_str[256] = {
     "transfer",                                          // 0x51
     "silent call",                                       // 0x52
     "Called Party warned",                               // 0x53
+    "end of ringing of VPW in gateway mode",             // 0x54 // NEW
+    "no reply from called party (VPW in gateway mode)",  // 0x55 // NEW
 
-    "N/A",                                               // 0x54
-    "N/A",                                               // 0x55
     "N/A",                                               // 0x56
     "N/A",                                               // 0x57
     "N/A",                                               // 0x58
@@ -668,6 +668,17 @@ static void d_crisis_notification_print(const tsdu_d_crisis_notification_t *tsdu
     }
 }
 
+static void d_ddch_description_print(const tsdu_d_ddch_description_t *tsdu) // NEW
+{
+    tsdu_base_print(&tsdu->base);
+    LOGF("\t\tNB_DDCH=%d\n", tsdu->nb_ddch);
+    for (int i = 0; i < tsdu->nb_ddch; ++i) {
+        LOGF("\t\tCHANNEL_ID=%d\n", tsdu->channel_id[i]);
+        LOGF("\t\tU_CH_SCRAMBLING=%d\n", tsdu->u_ch_scrambling[i]);
+        LOGF("\t\tD_CH_SCRAMBLING=%d\n", tsdu->d_ch_scrambling[i]);
+    }
+}
+
 static void d_data_authentication_print(const tsdu_d_data_authentication_t *tsdu)
 {
     tsdu_base_print(&tsdu->base);
@@ -685,6 +696,13 @@ static void d_data_end_print(const tsdu_d_data_end_t *tsdu)
 {
     tsdu_base_print(&tsdu->base);
     LOGF("\t\tCAUSE=0x%02x (%s)\n", tsdu->cause, cause_str[tsdu->cause]);
+}
+
+static void d_functional_short_data_print(const tsdu_d_functional_short_data_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    char buf[tsdu->data_len * 3 + 1];
+    LOGF("\tdata=%s\n", sprint_hex(buf, tsdu->data, tsdu->data_len)); // @TODO SHORT_DATA_CONTENT
 }
 
 static void d_data_msg_down_print(const tsdu_d_data_msg_down_t *tsdu)
@@ -737,9 +755,9 @@ static void d_datagram_notify_print(const tsdu_d_datagram_notify_t *tsdu)
 {
     tsdu_base_print(&tsdu->base);
     LOGF("\t\tCALL_PRIORITY=%d\n", tsdu->call_priority);
-    LOGF("\t\tMESSAGE_REFERENCE=%d\n", tsdu->message_reference);
-    LOGF("\t\tKEY_REFERENCE: key_index=%d key_type=%d\n",
-            tsdu->key_reference.key_index, tsdu->key_reference.key_type);
+    LOGF("\t\tMESSAGE_REFERENCE=0x%04x\n", tsdu->message_reference);
+    LOGF("\t\tKEY_REFERENCE: KEY_TYPE=%d KEY_INDEX=%d\n",
+            tsdu->key_reference.key_type, tsdu->key_reference.key_index);
     if (tsdu->destination_port != -1) {
         LOGF("\t\tDESTINATION_PORT=%d\n", tsdu->destination_port);
     }
@@ -749,8 +767,8 @@ static void d_datagram_print(const tsdu_d_datagram_t *tsdu)
 {
     tsdu_base_print(&tsdu->base);
     LOGF("\t\tCALL_PRIORITY=%d\n", tsdu->call_priority);
-    LOGF("\t\tMESSAGE_REFERENCE=%d\n", tsdu->message_reference);
-    LOGF("\t\tKEY_REFERENCE: key_type=%d key_index=%d\n",
+    LOGF("\t\tMESSAGE_REFERENCE=0x%04x\n", tsdu->message_reference);
+    LOGF("\t\tKEY_REFERENCE: KEY_TYPE=%d KEY_INDEX=%d\n",
             tsdu->key_reference.key_type, tsdu->key_reference.key_index);
     char buf[tsdu->len * 3 + 1];
     LOGF("\t\tDATA: len=%d data=%s\n", tsdu->len,
@@ -785,6 +803,35 @@ static void d_forced_registration_print(const tsdu_d_forced_registration_t *tsdu
 {
     tsdu_base_print(&tsdu->base);
     address_print(&tsdu->calling_adr);
+}
+
+static void d_emergency_notification_print(const tsdu_d_emergency_notification_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    address_print(&tsdu->calling_adr);
+    LOGF("\t\tCELL_ID BS_ID=%d RSW_ID=%d\n",
+                    tsdu->cell_id.bs_id,
+                    tsdu->cell_id.rsw_id);
+}
+
+static void d_ech_activation_print(const tsdu_d_ech_activation_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    LOGF("\t\tACTIVATION_MODE: HOOK=%d TYPE=%d\n",
+            tsdu->activation_mode.hook, tsdu->activation_mode.type);
+    LOGF("\t\tGROUP_ID=%d\n", tsdu->group_id);
+    LOGF("\t\tCELL_ID BS_ID=%d RSW_ID=%d\n",
+                    tsdu->cell_id.bs_id,
+                    tsdu->cell_id.rsw_id);
+    LOGF("\t\tCHANNEL_ID=%d\n", tsdu->channel_id);
+    LOGF("\t\tU_CH_SCRAMBLING=%d\n", tsdu->u_ch_scrambling);
+    LOGF("\t\tD_CH_SCRAMBLING=%d\n", tsdu->d_ch_scrambling);
+    LOGF("\t\tKEY_REFERENCE: KEY_TYPE=%i KEY_INDEX=%i\n",
+            tsdu->key_reference.key_type, tsdu->key_reference.key_index);
+    if (tsdu->has_addr_tti) {
+        char buf[ADDR_PRINT_BUF_SIZE];
+        LOGF("\t\tADDR_TTI=%s\n", addr_print(buf, &tsdu->addr_tti));
+    }
 }
 
 static void d_group_activation_print(const tsdu_d_group_activation_t *tsdu)
@@ -850,8 +897,8 @@ static void d_group_list_print(const tsdu_d_group_list_t *tsdu)
     if (tsdu->ngroup) {
         LOGF("\t\tGROUP\n");
         for (int i = 0; i < tsdu->ngroup; ++i) {
-            LOGF("\t\t\tCOVERAGE_ID=%d NEIGHBOURING_CELL=%d\n",
-                    tsdu->group[i].coverage_id, tsdu->group[i].neighbouring_cell);
+            LOGF("\t\t\tCOVERAGE_ID=%d NEIGHBOURING_CELL=%d TKG_PARAMETERS.MBN=%d\n",
+                    tsdu->group[i].coverage_id, tsdu->group[i].neighbouring_cell, tsdu->group[i].tkg_parameters.mbn);
         }
     }
 
@@ -882,13 +929,13 @@ static void d_group_reject_print(const tsdu_d_group_reject_t *tsdu)
             tsdu->activation_mode.hook, tsdu->activation_mode.type);
     LOGF("\t\tGROUP_ID=%d\n", tsdu->group_id);
     LOGF("\t\tCOVERAGE_ID=%d\n", tsdu->coverage_id);
-    LOGF("\t\tCAUSE=%d\n", tsdu->cause);
+    LOGF("\t\tCAUSE=0x%02x (%s)\n", tsdu->cause, cause_str[tsdu->cause]);
 }
 
 static void d_hook_on_invitation_print(const tsdu_d_hook_on_invitation_t *tsdu)
 {
     tsdu_base_print(&tsdu->base);
-    LOGF("\tCAUSE=0x%2x\n", tsdu->cause);
+    LOGF("\tCAUSE=0x%02x (%s)\n", tsdu->cause, cause_str[tsdu->cause]);
 }
 
 static void d_location_activity_ack_print(const tsdu_d_location_activity_ack_t *tsdu)
@@ -937,7 +984,7 @@ static void d_neighbouring_cell_print(const tsdu_d_neighbouring_cell_t *tsdu)
 static void d_refusal_print(const tsdu_d_refusal_t *tsdu)
 {
     tsdu_base_print(&tsdu->base);
-    LOGF("\tCAUSE=0x%2x\n", tsdu->cause);
+    LOGF("\tCAUSE=0x%02x (%s)\n", tsdu->cause, cause_str[tsdu->cause]);
 }
 
 static void d_registration_ack_print(const tsdu_d_registration_ack_t *tsdu)
@@ -957,6 +1004,20 @@ static void d_registration_ack_print(const tsdu_d_registration_ack_t *tsdu)
     LOGF("\t\tGROUP_ID=%i\n", tsdu->group_id);
     if (tsdu->has_coverage_id) {
         LOGF("\t\tCOVERAGE_ID=%i\n", tsdu->coverage_id);
+    }
+    if (tsdu->nb_subscription!=0) {
+        LOGF("\t\tIEI_DDCH_SUB=%d\n", tsdu->iei_ddch_sub);
+        LOGF("\t\tNB_SUBSCRIPTION=%d\n", tsdu->nb_subscription);
+        for (int i = 0; i < tsdu->nb_subscription; ++i) {
+            LOGF("\t\t\tSUB_APPLI_NUM=%d\n", tsdu->sub_appli_num[i]);
+            LOGF("\t\t\tSUBSCRIPTION_INFO=%d\n", tsdu->subscription_info[i]);
+            LOGF("\t\t\tCAUSE=0x%02x (%s)\n", tsdu->cause[i], cause_str[tsdu->cause[i]]);
+            LOGF("\t\t\tDDCH_NUMBER=%d\n", tsdu->ddch_number[i]);
+            LOGF("\t\t\tACCESS_PROFILE=%d\n", tsdu->access_profile[i]);
+            LOGF("\t\t\tFIRST_RADIO_SLOT=%d\n", tsdu->first_radio_slot[i]);
+        }
+    } else {
+        LOGF("\t\tNB_SUBSCRIPTION=%d\n", tsdu->nb_subscription);
     }
 }
 
@@ -981,7 +1042,7 @@ static void d_reject_print(const tsdu_d_reject_t *tsdu)
 
         case 0x11:
         case 0x40:
-            cause_txt = " (call timeout after 30 sec ???)";
+            cause_txt = " (call timeout after 30 sec ?)";
             break;
 
         case 0x41:
@@ -1003,7 +1064,7 @@ static void d_reject_print(const tsdu_d_reject_t *tsdu)
 static void d_release_print(const tsdu_d_release_t *tsdu)
 {
     tsdu_base_print(&tsdu->base);
-    LOGF("\tCAUSE=0x%2x\n", tsdu->cause);
+    LOGF("\tCAUSE=0x%02x (%s)\n", tsdu->cause, cause_str[tsdu->cause]);
 }
 
 static void d_return_print(const tsdu_d_return_t *tsdu)
@@ -1021,12 +1082,12 @@ static void d_system_info_print(const tsdu_d_system_info_t *tsdu)
         LOGF("\t\t\tBCH=%d\n", tsdu->cell_state.bch);
         LOGF("\t\t\tROAM=%d\n", tsdu->cell_state.roam);
         LOGF("\t\t\tEXP=%d\n", tsdu->cell_state.exp);
-        LOGF("\t\t\tRSERVED=%d\n", tsdu->cell_state._reserved_00);
+        LOGF("\t\t\tNCS=%d\n", tsdu->cell_state.ncs);
 
         LOGF("\t\tCELL_CONFIG\n");
         LOGF("\t\t\tECCH=%d\n", tsdu->cell_config.eccch);
         LOGF("\t\t\tATTA=%d\n", tsdu->cell_config.atta);
-        LOGF("\t\t\tRESERVED=%d\n", tsdu->cell_config._reserved_0);
+        LOGF("\t\t\tDDCH=%d\n", tsdu->cell_config.ddch);
         LOGF("\t\t\tMUX_TYPE=%d\n", tsdu->cell_config.mux_type);
         LOGF("\t\t\tSIM=%d\n", tsdu->cell_config.sim);
         LOGF("\t\t\tDC=%d\n", tsdu->cell_config.dc);
@@ -1041,6 +1102,14 @@ static void d_system_info_print(const tsdu_d_system_info_t *tsdu)
         LOGF("\t\tCELL_ID=%d%d%d-%d-%d\n",
                 tsdu->cell_bn.r1,tsdu->cell_bn.r2,tsdu->cell_bn.r3,
                 tsdu->cell_id.rsw_id, tsdu->cell_id.bs_id);
+	/* envoi de lID de la cellule - a minima */
+	/*
+        json_object* json_cell = create_json_cell_info(tsdu->cell_bn.r1, 
+						tsdu->cell_bn.r2, 
+						tsdu->cell_bn.r3,
+						tsdu->cell_id.rsw_id,
+						tsdu->cell_id.bs_id);
+	*/
         LOGF("\t\tU_CH_SCRAMBLING=%d\n", tsdu->u_ch_scrambling);
         LOGF("\t\tCELL_RADIO_PARAM\n");
         LOGF("\t\t\tTX_MAX=%d\n", tsdu->cell_radio_param.tx_max);
@@ -1076,6 +1145,31 @@ static void d_system_info_print(const tsdu_d_system_info_t *tsdu)
         LOGF("\t\tBAND=%d\n", tsdu->band);
         LOGF("\t\tCHANNEL_ID=%d\n", tsdu->channel_id);
     }
+}
+
+static void d_periodic_access_subscription_ack_print(const tsdu_d_periodic_access_subscription_ack_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    LOGF("\t\tIEI_DDCH_SUB=%d\n", tsdu->iei_ddch_sub);
+    LOGF("\t\tSUB_APPLI_NUM=%d\n",tsdu->sub_appli_num);
+    LOGF("\t\tSUBSCRIPTION_INFO=%d\n",tsdu->subscription_info);
+    //b2b1 = DDCH subscription, b4=0, b3=TYPE_ENC (=0: periodic messages not ciphered by network, 1= ciphered)
+    //uint8_t type_enc = get_bits(1, tsdu->subscription_info, 5);
+    //uint8_t ddch_sub = get_bits(2, tsdu->subscription_info, 6);
+    //LOGF("\t\t\tTYPE_ENC=%d\n", get_bits(1, tsdu->subscription_info, 5));
+    //LOGF("\t\t\tDDCH_SUBSCRIPTION=%d\n", get_bits(2, tsdu->subscription_info, 6));
+    LOGF("\t\tCAUSE=0x%02x (%s)\n", tsdu->cause, cause_str[tsdu->cause]);
+    LOGF("\t\tDDCH_NUMBER=%d\n",tsdu->ddch_number);
+    LOGF("\t\tACCESS_PROFILE=%d\n",tsdu->access_profile); // period index
+    LOGF("\t\tFIRST_RADIO_SLOT=%d\n",tsdu->first_radio_slot);
+}
+
+static void d_periodic_access_subscription_nak_print(const tsdu_d_periodic_access_subscription_nak_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    LOGF("\t\tIEI_DDCH_SUB=%d\n", tsdu->iei_ddch_sub);
+    LOGF("\t\tSUB_APPLI_NUM=%d\n",tsdu->sub_appli_num);
+    LOGF("\t\tCAUSE=0x%02x (%s)\n", tsdu->cause, cause_str[tsdu->cause]);
 }
 
 static void u_registration_req_print(const tsdu_u_registration_req_t *tsdu)
@@ -1147,6 +1241,288 @@ static void u_call_connect_print(const tsdu_u_call_connect_t *tsdu)
             sprint_hex(buf, tsdu->result_rt, sizeof(tsdu->result_rt)));
 }
 
+static void d_broadcast_print(const tsdu_d_broadcast_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    LOGF("\t\tCALL_PRIORITY=%d\n", tsdu->call_priority);
+    LOGF("\t\tMESSAGE_REFERENCE=0x%04x\n", tsdu->message_reference);
+    LOGF("\t\tKEY_REFERENCE: KEY_TYPE=%i KEY_INDEX=%i\n",
+            tsdu->key_reference.key_type, tsdu->key_reference.key_index);
+    char buf[tsdu->data_len * 3 + 1];
+    LOGF("\t\tUSER_DATA=%s\n", sprint_hex(buf, tsdu->user_data, tsdu->data_len));
+}
+
+static void d_broadcast_notification_print(const tsdu_d_broadcast_notification_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    for (int i = 0; i < tsdu->og_nb; ++i) {
+        LOGF("\t\tGROUP_ID=%d\n", tsdu->group_ids[i]);
+    }
+}
+
+static void d_broadcast_waiting_print(const tsdu_d_broadcast_waiting_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    LOGF("\t\tBROADCAST_REFERENCE=%d\n", tsdu->broadcast_reference);
+    LOGF("\t\tTRANS_PARAM3=0x%04x\n", tsdu->trans_param3);
+}
+
+static void d_call_switch_print(const tsdu_d_call_switch_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    LOGF("\t\tCALL_TYPE ORIGIN=0x%x DESTINATION=0x%x TRFS=%d\n",
+            tsdu->call_type.origin, tsdu->call_type.destination,
+            tsdu->call_type.trfs);
+    LOGF("\t\tCHANNEL_ID=%d\n", tsdu->channel_id);
+    LOGF("\t\tU_CH_SCRAMBLING=%d\n", tsdu->u_ch_scrambling);
+    LOGF("\t\tD_CH_SCRAMBLING=%d\n", tsdu->d_ch_scrambling);
+    LOGF("\t\tKEY_REFERENCE: KEY_TYPE=%i KEY_INDEX=%i\n",
+            tsdu->key_reference.key_type, tsdu->key_reference.key_index);
+    char buf[3 * SIZEOF(tsdu_d_call_switch_t, valid_rt)];
+    LOGF("\t\tVALID_RT=%s\n",
+            sprint_hex(buf, tsdu->valid_rt, SIZEOF(tsdu_d_call_switch_t, valid_rt)));
+    if (tsdu->has_key_of_call) {
+        char buf[3 * sizeof(key_of_call_t)];
+        LOGF("\t\tKEY_OF_CALL=%s\n",
+                sprint_hex(buf, tsdu->key_of_call, sizeof(key_of_call_t)));
+    }
+    address_print(&tsdu->calling_adr);
+    if (tsdu->has_add_setup_param) {
+        LOGF("\t\tORIGIN=%d ID=%d MOD=%d SIL=%d\n",
+                tsdu->add_setup_param.origin,
+                tsdu->add_setup_param.id,
+                tsdu->add_setup_param.mod,
+                tsdu->add_setup_param.sil);
+    }
+}
+
+static void d_data_down_status_print(const tsdu_d_data_down_status_t *tsdu)
+{
+    const char *rt_status_code_txt = "Free user information field";
+    const char *rt_status_info_txt = "Free user information";
+    switch (tsdu->rt_status_code) {
+        case 0xc0:
+            rt_status_code_txt = "Emergency open channel";
+            break;
+        case 0xc1:
+            rt_status_code_txt = "Reserved (compatibility)";
+            break;
+        case 0xc2:
+            rt_status_code_txt = "Reserved (compatibility)";
+            break;
+        case 0xd0:
+            rt_status_code_txt = "Reserved (compatibility)";
+            break;
+        case 0xd1:
+            rt_status_code_txt = "Reserved (compatibility)";
+            break;
+        case 0xd2:
+            rt_status_code_txt = "Reserved (compatibility)";
+            break;
+        case 0xd3:
+            rt_status_code_txt = "Reserved (compatibility)";
+            break;
+        case 0xd4:
+            rt_status_code_txt = "Emergency open channel request";
+            break;
+        case 0xd5:
+            rt_status_code_txt = "Emergency open channel indication";
+            break;
+        case 0xd6:
+            rt_status_code_txt = "Crisis open channel request";
+            break;
+        case 0xd7:
+            rt_status_code_txt = "Crisis open channel indication";
+            break;
+        case 0xd8:
+            rt_status_code_txt = "Emergency private call request";
+            break;
+        case 0xd9:
+            rt_status_code_txt = "Unsuccessful call indication";
+            break;
+        case 0xda:
+            rt_status_code_txt = "Call me back request";
+            break;
+        default:
+            break;
+    }
+
+    switch (tsdu->rt_status_info) { //TODO take other cases into account
+        case 0xd4:
+        case 0xd5:
+        case 0xd6:
+        case 0xd7:
+        case 0xd8:
+        case 0xd9:
+        case 0xda:
+            rt_status_info_txt = "RT ORGANISATION";
+            break;
+	default:
+            break;
+    }
+
+    tsdu_base_print(&tsdu->base);
+    LOGF("\tRT_STATUS_CODE=0x%2x%s\n", tsdu->rt_status_code, rt_status_code_txt);
+    LOGF("\tRT_STATUS_INFO=0x%2x%s\n", tsdu->rt_status_info, rt_status_info_txt);
+    LOGF("\t\tCELL_ID: BS_ID=%d RSW_ID=%d\n",
+            tsdu->cell_id.bs_id, tsdu->cell_id.rsw_id);
+    address_print(&tsdu->rt_id);
+}
+
+static void d_ech_reject_print(const tsdu_d_ech_reject_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    LOGF("\t\tACTIVATION_MODE: hook=%d type=%d\n",
+            tsdu->activation_mode.hook, tsdu->activation_mode.type);
+    LOGF("\t\tGROUP_ID=%d", tsdu->group_id);
+    LOGF("\t\tCELL_ID: BS_ID=%d RSW_ID=%d\n",
+            tsdu->cell_id.bs_id, tsdu->cell_id.rsw_id);
+    LOGF("\t\tCAUSE=0x%02x (%s)\n", tsdu->cause, cause_str[tsdu->cause]);
+}
+
+static void d_emergency_nak_print(const tsdu_d_emergency_nak_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    LOGF("\t\tCAUSE=0x%02x (%s)\n", tsdu->cause, cause_str[tsdu->cause]);
+}
+
+static void d_extended_status_print(const tsdu_d_extended_status_t *tsdu)
+{
+    //TODO refactor (same as in d_data_down_status for rt_status_info and _code)
+    const char *rt_status_code_txt = "Free user information field";
+    const char *rt_status_info_txt = "Free user information";
+    switch (tsdu->rt_status_code) {
+        case 0xc0:
+            rt_status_code_txt = "Emergency open channel";
+            break;
+        case 0xc1:
+            rt_status_code_txt = "Reserved (compatibility)";
+            break;
+        case 0xc2:
+            rt_status_code_txt = "Reserved (compatibility)";
+            break;
+        case 0xd0:
+            rt_status_code_txt = "Reserved (compatibility)";
+            break;
+        case 0xd1:
+            rt_status_code_txt = "Reserved (compatibility)";
+            break;
+        case 0xd2:
+            rt_status_code_txt = "Reserved (compatibility)";
+            break;
+        case 0xd3:
+            rt_status_code_txt = "Reserved (compatibility)";
+            break;
+        case 0xd4:
+            rt_status_code_txt = "Emergency open channel request";
+            break;
+        case 0xd5:
+            rt_status_code_txt = "Emergency open channel indication";
+            break;
+        case 0xd6:
+            rt_status_code_txt = "Crisis open channel request";
+            break;
+        case 0xd7:
+            rt_status_code_txt = "Crisis open channel indication";
+            break;
+        case 0xd8:
+            rt_status_code_txt = "Emergency private call request";
+            break;
+        case 0xd9:
+            rt_status_code_txt = "Unsuccessful call indication";
+            break;
+        case 0xda:
+            rt_status_code_txt = "Call me back request";
+            break;
+        default:
+            break;
+    }
+
+    switch (tsdu->rt_status_info) { //TODO take other cases into account
+        case 0xd4:
+        case 0xd5:
+        case 0xd6:
+        case 0xd7:
+        case 0xd8:
+        case 0xd9:
+        case 0xda:
+            rt_status_info_txt = "RT ORGANISATION";
+            break;
+	default:
+            break;
+    }
+
+    tsdu_base_print(&tsdu->base);
+    address_print(&tsdu->calling_adr);
+    LOGF("\t\tCALL_PRIORITY=%d\n", tsdu->call_priority);
+    address_print(&tsdu->called_adr);
+}
+
+static void d_group_end_print(const tsdu_d_group_end_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    LOGF("\t\tCAUSE=0x%02x (%s)\n", tsdu->cause, cause_str[tsdu->cause]);
+}
+
+static void d_transfer_nak_print(const tsdu_d_transfer_nak_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    LOGF("\t\tCAUSE=0x%02x (%s)\n", tsdu->cause, cause_str[tsdu->cause]);
+    if (tsdu->has_transfer_adr) {
+        address_print(&tsdu->transfer_adr);
+    }
+}
+
+static void d_tti_assignment_print(const tsdu_d_tti_assignment_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    if (tsdu->z == 1) {
+	    LOGF("\t\tNACK: TTI REQUEST REFUSED\n");
+	    if (tsdu->y == 1) {
+		    LOGF("\t\tCAUSE\tSWITCH SATURATED\n");
+	    }
+	    if (tsdu->y == 2) {
+		    LOGF("\t\tCAUSE\tCELL SATURATED\n");
+	    }
+	    if (tsdu->y == 3) {
+		    LOGF("\t\tCAUSE\tLACK OF RESOURCES\n");
+	    }
+    } else {
+        LOGF("\t\tTTI = 0.%d.0x%.3x\n", tsdu->y, tsdu->x); 
+    }   
+}
+
+static void d_information_delivery_print(const tsdu_d_information_delivery_t *tsdu)
+{
+    tsdu_base_print(&tsdu->base);
+    char buf[tsdu->len * 3 + 1];
+    LOGF("\t\tdata=%s\n", sprint_hex(buf, &tsdu->data[1], tsdu->len - 1));
+    if (tsdu->nb_network_og != 0) {
+	LOGF("\t\tNETWORK OG\n");
+	for (int i=0;i<tsdu->nb_network_og; i++) {
+		LOGF("\t\t\t\tOG=%d\n", tsdu->network_og[i]);
+        }
+    }
+    if (tsdu->nb_local_og != 0) {
+	LOGF("\t\tLOCAL OG\n");
+	for (int i=0;i<tsdu->nb_local_og; i++) {
+		LOGF("\t\t\t\tOG=%d\n", tsdu->local_og[i]);
+        }
+    }
+    if (tsdu->nb_network_tkg != 0) {
+	LOGF("\t\tNETWORK TKG\n");
+	for (int i=0;i<tsdu->nb_network_tkg; i++) {
+		LOGF("\t\t\t\tTKG=%d\tCOVERAGE=%d\n", tsdu->network_tkg[i], tsdu->network_tkg_cov[i]);
+        }
+    }
+    if (tsdu->nb_local_tkg != 0) {
+	LOGF("\t\tLOCAL TKG\n");
+	for (int i=0;i<tsdu->nb_local_tkg; i++) {
+		LOGF("\t\t\t\tTKG=%d\tCOVERAGE=%d\n", tsdu->local_tkg[i], tsdu->local_tkg_cov[i]);
+        }
+    }
+}
+
 static void d_unknown_print(const tsdu_unknown_codop_t *tsdu)
 {
     tsdu_base_print(&tsdu->base);
@@ -1199,6 +1575,10 @@ void tsdu_print(const tsdu_t *tsdu)
             d_connect_cch_print((const tsdu_d_connect_cch_t *)tsdu);
             break;
 
+        case D_DDCH_DESCRIPTION:
+            d_ddch_description_print((const tsdu_d_ddch_description_t *)tsdu);
+	    break;
+
         case D_CRISIS_NOTIFICATION:
             d_crisis_notification_print((const tsdu_d_crisis_notification_t *)tsdu);
             break;
@@ -1209,6 +1589,10 @@ void tsdu_print(const tsdu_t *tsdu)
 
         case D_DATA_END:
             d_data_end_print((const tsdu_d_data_end_t *)tsdu);
+            break;
+
+        case D_FUNCTIONAL_SHORT_DATA:
+            d_functional_short_data_print((const tsdu_d_functional_short_data_t *)tsdu);
             break;
 
         case D_DATA_MSG_DOWN:
@@ -1231,6 +1615,14 @@ void tsdu_print(const tsdu_t *tsdu)
             d_datagram_notify_print((const tsdu_d_datagram_notify_t *)tsdu);
             break;
 
+        case D_ECH_ACTIVATION:
+	    d_ech_activation_print((const tsdu_d_ech_activation_t *)tsdu);
+	    break;
+
+        case D_EMERGENCY_NOTIFICATION:
+	    d_emergency_notification_print((const tsdu_d_emergency_notification_t *)tsdu);
+	    break;
+	
         case D_ECH_OVERLOAD_ID:
             d_ech_overload_id_print((const tsdu_d_ech_overload_id_t *)tsdu);
             break;
@@ -1291,6 +1683,14 @@ void tsdu_print(const tsdu_t *tsdu)
             d_connect_dch_print((const tsdu_d_connect_dch_t *)tsdu);
             break;
 
+        case D_PERIODIC_ACCESS_SUBSCRIPTION_ACK:
+            d_periodic_access_subscription_ack_print((const tsdu_d_periodic_access_subscription_ack_t *)tsdu);
+            break;
+
+        case D_PERIODIC_ACCESS_SUBSCRIPTION_NAK:
+            d_periodic_access_subscription_nak_print((const tsdu_d_periodic_access_subscription_nak_t *)tsdu);
+            break;
+
         case D_REFUSAL:
             d_refusal_print((const tsdu_d_refusal_t *)tsdu);
             break;
@@ -1315,7 +1715,7 @@ void tsdu_print(const tsdu_t *tsdu)
             u_authentication_print((const tsdu_u_authentication_t *)tsdu);
             break;
 
-        case U_CALL_CONNECT:
+        case U_CALL_CONNECT_U_CALL_SWITCH:
             u_call_connect_print((const tsdu_u_call_connect_t *)tsdu);
             break;
 
@@ -1330,42 +1730,81 @@ void tsdu_print(const tsdu_t *tsdu)
         case U_TERMINATE:
             u_terminate_print((const tsdu_u_terminate_t *)tsdu);
             break;
+	
+        case D_BROADCAST:
+	    d_broadcast_print((const tsdu_d_broadcast_t *)tsdu);
+	    break;
+
+        case D_BROADCAST_NOTIFICATION:
+	    d_broadcast_notification_print((const tsdu_d_broadcast_notification_t *)tsdu);
+	    break;
+
+        case D_BROADCAST_WAITING:
+	    d_broadcast_waiting_print((const tsdu_d_broadcast_waiting_t *)tsdu);
+	    break;
+
+        case D_CALL_SWITCH:
+	    d_call_switch_print((const tsdu_d_call_switch_t *)tsdu);
+	    break;
+
+        case D_DATA_DOWN_STATUS:
+	    d_data_down_status_print((const tsdu_d_data_down_status_t *)tsdu);
+	    break;
+
+        case D_ECH_REJECT:
+	    d_ech_reject_print((const tsdu_d_ech_reject_t *)tsdu);
+	    break;
+
+        case D_EMERGENCY_NAK:
+	    d_emergency_nak_print((const tsdu_d_emergency_nak_t *)tsdu);
+	    break;
+
+        case D_EXTENDED_STATUS:
+	    d_extended_status_print((const tsdu_d_extended_status_t *)tsdu);
+	    break;
+
+        case D_GROUP_END:
+	    d_group_end_print((const tsdu_d_group_end_t *)tsdu);
+	    break;
+
+        case D_TRANSFER_NAK:
+	    d_transfer_nak_print((const tsdu_d_transfer_nak_t *)tsdu);
+	    break;
+
+	case D_INFORMATION_DELIVERY:
+	    d_information_delivery_print((const tsdu_d_information_delivery_t *)tsdu);
+	    break;
+
+	case D_TTI_ASSIGNMENT:
+	    d_tti_assignment_print((const tsdu_d_tti_assignment_t *)tsdu);
+	    break;
 
         case D_ACCESS_DISABLED:
         case D_BACK_CCH:
-        case D_BROADCAST:
-        case D_BROADCAST_NOTIFICATION:
-        case D_BROADCAST_WAITING:
         case D_CALL_ACTIVATION:
         case D_CALL_COMPOSITION:
         case D_CALL_END:
         case D_CALL_OVERLOAD_ID:
-        case D_CALL_SWITCH:
         case D_CALL_WAITING:
-        case D_DATA_DOWN_STATUS:
+        case D_CHANNEL_INIT:
         case D_DATA_SERV:
         case D_DEVIATION_ON:
         case D_ECCH_DESCRIPTION:
-        case D_ECH_ACTIVATION:
-        case D_ECH_REJECT:
         case D_EMERGENCY_ACK:
-        case D_EMERGENCY_NAK:
-        case D_EMERGENCY_NOTIFICATION:
-        case D_EXTENDED_STATUS:
-        case D_FUNCTIONAL_SHORT_DATA:
-        case D_GROUP_END:
+        case D_GROUP_MASTER:
         case D_GROUP_OVERLOAD_ID:
-        case D_CHANNEL_INIT:
-        case D_INFORMATION_DELIVERY:
         case D_OC_ACTIVATION:
         case D_OC_PAGING:
         case D_OC_REJECT:
         case D_PRIORITY_GRP_ACTIVATION:
         case D_PRIORITY_GRP_WAITING:
         case D_SERVICE_DISABLED:
+        case D_TKG_PRIO_LIST:
         case D_TRAFFIC_DISABLED:
         case D_TRAFFIC_ENABLED:
-        case D_TRANSFER_NAK:
+	case D_UNKNOWN_KEY_C1:
+	case D_UNKNOWN_KEY_C2:
+	case D_UNKNOWN_KEY_C4:
         case U_ABORT:
         case U_CALL_ANSWER:
         case U_CALL_INTRUSION_ECH:
@@ -1386,6 +1825,7 @@ void tsdu_print(const tsdu_t *tsdu)
         case U_LOCATION_ACTIVITY:
         case U_OCH_RELEASE:
         case U_OCH_SETUP:
+        case U_PERIODIC_ACCESS_SUBSCRIPTION_REQ:
         case U_TRANSFER_REQ:
             LOG(WTF, "TODO: print not implemented: codop=0x%02x",
                     tsdu->codop);
@@ -1398,4 +1838,3 @@ void tsdu_print(const tsdu_t *tsdu)
 
     }
 }
-

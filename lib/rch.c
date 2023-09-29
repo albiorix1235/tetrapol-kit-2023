@@ -51,14 +51,14 @@ bool rch_push_frame(rch_t *rch, const frame_t *fr)
     }
 
     if (data_frame_blocks(rch->data_fr) != 1) {
-        LOG(WTF, "block lenght != 1");
+        LOG(WTF, "block length != 1");
         return false;
     }
 
     uint8_t data[(92 + 7) / 8];
     const int size = data_frame_get_bytes(rch->data_fr, data);
     if (size != 64) {
-        LOG(WTF, "invalid frame lenght");
+        LOG(WTF, "invalid frame length");
         return false;
     }
 

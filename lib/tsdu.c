@@ -4,7 +4,6 @@
 #include <tetrapol/tsdu.h>
 #include <tetrapol/misc.h>
 #include <tetrapol/bit_utils.h>
-#include <tetrapol/misc.h>
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -26,6 +25,8 @@ const int CELL_RADIO_PARAM_RX_LEV_ACCESS_TO_DBM[16] = {
     -92, -88, -84, -80, -76, -72, -68, -64,
     -60, -56, -52, -48, -44, -40, -36, -32,
 };
+
+
 
 static void tsdu_base_set_nopts(tsdu_base_t *tsdu, int noptionals)
 {
@@ -137,13 +138,315 @@ static tsdu_d_crisis_notification_t *d_crisis_notification_decode(
         tsdu_destroy(&tsdu->base);
         return NULL;
     }
-    CHECK_LEN(len, 10 + (12 * tsdu->og_nb) / 12, tsdu);
+    CHECK_LEN(len, 10 + (12 * tsdu->og_nb) / 8, tsdu); // fixed divisor (8 instead of 12)
     for (int i = 0; i < tsdu->og_nb; ++i) {
         tsdu->group_ids[i] = get_bits(12, &data[9], 4 + 12*i);
     }
 
     return tsdu;
 }
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+static tsdu_d_broadcast_t *d_broadcast_decode(const uint8_t *data, int len)
+{
+    tsdu_d_broadcast_t *tsdu = tsdu_create(tsdu_d_broadcast_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+    CHECK_LEN(len, 5, tsdu);
+
+    tsdu->call_priority         = get_bits(4, data + 1, 4);
+    tsdu->message_reference     = data[2] | (data[3] << 8);
+    tsdu->key_reference._data   = data[4];
+    tsdu->data_len = len - 5;
+    memcpy(tsdu->user_data, &data[5], tsdu->data_len);
+
+    return tsdu;
+}
+
+static tsdu_d_broadcast_notification_t *d_broadcast_notification_decode(const uint8_t *data, int len)
+{
+    tsdu_d_broadcast_notification_t *tsdu = tsdu_create(tsdu_d_broadcast_notification_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+
+    CHECK_LEN(len, 1, tsdu);
+    tsdu->og_nb = get_bits(4, data + 1, 4);
+    
+    CHECK_LEN(len, 2 + (12 * tsdu->og_nb) / 8, tsdu); 
+    for (int i = 0; i < tsdu->og_nb; ++i) {
+        tsdu->group_ids[i] = get_bits(12, &data[1], 4 + 12*i);
+    }
+    return tsdu;
+}
+
+static tsdu_d_broadcast_waiting_t *d_broadcast_waiting_decode(const uint8_t *data, int len)
+{
+    tsdu_d_broadcast_waiting_t *tsdu = tsdu_create(tsdu_d_broadcast_waiting_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+    CHECK_LEN(len, 5, tsdu);
+
+    tsdu->broadcast_reference = get_bits(16, data+1, 0);
+    tsdu->trans_param3 = get_bits(16, data+3, 0);
+
+    return tsdu;
+}
+
+static tsdu_d_call_switch_t *d_call_switch_decode(const uint8_t *data, int len)
+{
+
+    tsdu_d_call_switch_t *tsdu = tsdu_create(tsdu_d_call_switch_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+    CHECK_LEN(len, 17, tsdu);
+
+    tsdu->call_type._data       = data[1];
+    tsdu->channel_id            = get_bits(12, &data[2], 4);
+    tsdu->u_ch_scrambling       = data[4];
+    tsdu->d_ch_scrambling       = data[5];
+    tsdu->key_reference._data   = data[6];
+    memcpy(tsdu->valid_rt, &data[7], SIZEOF(tsdu_d_call_switch_t, valid_rt));
+    
+    const uint8_t *data_ = &data[15];
+    if (address_decode(&tsdu->calling_adr, &data_)) {
+        LOG(WTF, "Only single addres in list is supported.");
+    }
+
+    int y = 14 + SIZEOF(tsdu_d_call_switch_t, calling_adr);
+    tsdu->has_key_of_call =
+        (tsdu->key_reference.key_type == KEY_TYPE_ESC) &&
+        (tsdu->key_reference.key_index == KEY_INDEX_KEY_SUPPLIED);
+    if (tsdu->has_key_of_call) {
+        CHECK_LEN(len, y+16, tsdu);
+        memcpy(tsdu->key_of_call, &data[y+1], sizeof(key_of_call_t));
+    }
+    tsdu->has_add_setup_param = false;
+    if (len >= y + 16) {
+        uint8_t iei = data[y+16+1]; // get_bits(8, data + y + 16 + 1, 0);
+	tsdu->has_add_setup_param = (iei == IEI_ADD_SETUP_PARAM);
+	if (!tsdu->has_add_setup_param) {
+            LOG(WTF, "Expected IEI_ADD_SETUP_PARAM got %d", iei);
+	    return tsdu;
+        } else {
+            tsdu->add_setup_param._data = data[y + 16 + 2];
+        }
+    }
+
+    return tsdu;
+}
+
+static tsdu_d_data_down_status_t *d_data_down_status_decode(const uint8_t *data, int len)
+{
+    tsdu_d_data_down_status_t *tsdu = tsdu_create(tsdu_d_data_down_status_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+    CHECK_LEN(len, 9, tsdu);
+
+    tsdu->rt_status_code             = data[1];
+    tsdu->rt_status_info             = data[2];
+    cell_id_decode1(&tsdu->cell_id, data + 3);
+    const uint8_t *adr_data = &data[4] + 4;
+    if (address_decode(&tsdu->rt_id, &adr_data)) {
+        LOG(ERR, "Only single address is supported in rt_id");
+    }
+
+    return tsdu;
+}
+
+static tsdu_d_ech_reject_t *d_ech_reject_decode(const uint8_t *data, int len)
+{
+
+    tsdu_d_ech_reject_t *tsdu = tsdu_create(tsdu_d_ech_reject_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+    CHECK_LEN(len, 6, tsdu);
+
+    activation_mode_decode(&tsdu->activation_mode, data[1]);
+    tsdu->group_id  = get_bits(12, data + 1, 4);
+    cell_id_decode1(&tsdu->cell_id, data + 3);
+    tsdu->cause = data[5];
+
+    return tsdu;
+}
+
+static tsdu_d_emergency_nak_t *d_emergency_nak_decode(const uint8_t *data, int len)
+{
+    tsdu_d_emergency_nak_t *tsdu = tsdu_create(tsdu_d_emergency_nak_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+    CHECK_LEN(len, 2, tsdu);
+
+    tsdu->cause = data[1];
+
+    return tsdu;
+}
+
+static tsdu_d_extended_status_t *d_extended_status_decode(const uint8_t *data, int len)
+{
+    tsdu_d_extended_status_t *tsdu = tsdu_create(tsdu_d_extended_status_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+    CHECK_LEN(len, 8, tsdu);
+    
+    tsdu->rt_status_code             = data[1];
+    tsdu->rt_status_info             = data[2];
+    const uint8_t *adr_data = &data[3];
+    if (address_decode(&tsdu->calling_adr, &adr_data)) {
+        LOG(ERR, "Only single address is supported in calling_adr");
+    }
+    tsdu->call_priority         = get_bits(4, data + 8, 0);
+    const uint8_t *called_adr_data = &data[9];
+    if (address_decode(&tsdu->called_adr, &called_adr_data)) {
+        LOG(ERR, "Only single address is supported in called_adr");
+    }
+
+    return tsdu;
+}
+
+static tsdu_d_group_end_t *d_group_end_decode(const uint8_t *data, int len)
+{
+    tsdu_d_group_end_t *tsdu = tsdu_create(tsdu_d_group_end_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+    CHECK_LEN(len, 2, tsdu);
+    tsdu->cause = data[1];
+
+    return tsdu;
+}
+
+static tsdu_d_information_delivery_t *d_information_delivery_decode(const uint8_t *data, int len)
+{
+    tsdu_d_information_delivery_t *tsdu = tsdu_create(tsdu_d_information_delivery_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+    CHECK_LEN(len, 2, tsdu); //TODO check min size
+
+    int i = 1;
+    int j;
+
+    // raw data
+    tsdu->len = len;
+    tsdu->data = malloc(len);
+    memcpy(tsdu->data, data, len);
+
+    tsdu->nb_network_og = 0;
+    tsdu->nb_local_og = 0;
+    tsdu->nb_network_tkg = 0;
+    tsdu->nb_local_tkg = 0;
+    
+    uint8_t t_i;
+    uint8_t l_i = 0;
+
+    int nb_og;
+    int nb_tkg;
+    
+    bool quit = false;
+
+    t_i = data[i];
+    while (t_i != 0 && !quit){        
+        switch(t_i) {
+            case 0x00: // not significant
+                //TODO
+                break;
+            case 0x01: // network OG
+                l_i = data[i+1];
+                if (l_i != 0) {
+                    nb_og = (l_i * 8)/12;
+                    for (j=0; j<nb_og; j++){
+                        tsdu->network_og[tsdu->nb_network_og] = get_bits(12, data + i + 2, j*12);
+                        tsdu->nb_network_og++;
+                    }
+                } else {
+			tsdu->nb_network_og = 0;
+		}
+                break;
+            case 0x02: // local OG
+                l_i = data[i+1];
+		if (l_i != 0) {
+                    nb_og = (l_i * 8)/12;
+                    for (j=0; j<nb_og; j++){
+                        tsdu->local_og[tsdu->nb_local_og] = get_bits(12, data + i + 2, j*12);
+                        tsdu->nb_local_og++;
+                    }
+		} else {
+		    tsdu->nb_local_og = 0;
+		}
+                break;
+            case 0x03: // network talkgroup
+                l_i = data[i+1];
+		if (l_i != 0) {
+                    nb_tkg = l_i/3;
+                    for (j=0; j<nb_tkg; j++){
+                        tsdu->network_tkg[tsdu->nb_network_tkg] = get_bits(12, data + i + 2 + j*3, 4);
+                        tsdu->network_tkg_cov[tsdu->nb_network_tkg] = data[i + 4 + j*3];
+                        tsdu->nb_network_tkg++;		
+                    }
+		} else {
+		    tsdu->nb_network_tkg = 0;
+		}
+                break;
+            case 0x04: // local talkgroup
+                l_i = data[i+1];
+		if (l_i != 0) {
+                    nb_tkg = l_i/3;
+                    for (j=0; j<nb_tkg; j++){
+                        tsdu->local_tkg[tsdu->nb_local_tkg] = get_bits(12, data + i + 2 + j*3, 4);
+                        tsdu->local_tkg_cov[tsdu->nb_local_tkg] = data[i + 4 + j*3];
+                        tsdu->nb_local_tkg++;
+                    }
+		} else {
+                    tsdu->nb_local_tkg = 0;
+		}
+                break;
+	    }
+        i = i + 2 + l_i;
+        t_i = data[i];
+	// *** TODO remove below after testing, just avoiding infinite loop...
+        if (i > 1000) {
+	    LOG(ERR, "Infinite loop during d_information_delivery analysis...");
+	    quit = true;
+	}       
+    }  
+    return tsdu;
+}
+
+static tsdu_d_transfer_nak_t *d_transfer_nak_decode(const uint8_t *data, int len)
+{
+    tsdu_d_transfer_nak_t *tsdu = tsdu_create(tsdu_d_transfer_nak_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+    CHECK_LEN(len, 8, tsdu);
+
+    tsdu->cause = data[1];
+    if (tsdu->cause == 0x15) { // PAS 0001-3-1 5.4.8.2 "inconsistent address", PAS 0001-3-2 5.2 value 0x15
+        const uint8_t *adr_data = &data[2];
+        if (address_decode(&tsdu->transfer_adr, &adr_data)) {
+            LOG(ERR, "Only single address is supported in transfer_adr");
+	}
+	tsdu->has_transfer_adr = true;
+    } else {
+	tsdu->has_transfer_adr = false;
+    }
+
+    return tsdu;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
 
 static tsdu_d_group_reject_t *d_group_reject_decode(const uint8_t *data, int len)
 {
@@ -322,6 +625,38 @@ static tsdu_d_dch_open_t *d_dch_open_decode(const uint8_t *data, int len)
     return tsdu_create(tsdu_d_dch_open_t, 0);
 }
 
+
+static tsdu_d_ddch_description_t *d_ddch_description_decode(const uint8_t *data, int len)
+{
+    // CHECK_LEN(len, 8, NULL); //FIXME
+
+    tsdu_d_ddch_description_t *tsdu = tsdu_create(
+            tsdu_d_ddch_description_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+
+    tsdu->nb_ddch = get_bits(4, &data[1], 0);
+    if (tsdu->nb_ddch > 3) {
+        LOG(WTF, "Too large NB_DDCH %d", tsdu->nb_ddch);
+        tsdu_destroy(&tsdu->base);
+        return NULL;
+    }
+    
+    // CHECK_LEN(len, 10 + (12 * tsdu->nb_ddch) / 12, tsdu); //FIXME
+    for (int i = 0; i < tsdu->nb_ddch; ++i) {
+        tsdu->channel_id[i] = get_bits(12, &data[1], 4 + 12*i);
+        tsdu->u_ch_scrambling[i] = get_bits(8, &data[1], 4 + 12*tsdu->nb_ddch + 16*i);
+        tsdu->d_ch_scrambling[i] = get_bits(8, &data[1], 12 + 12*tsdu->nb_ddch + 16*i);
+    }
+
+    return tsdu;
+
+}
+
+
+
+
 static tsdu_d_data_request_t *d_data_request_decode(const uint8_t *data, int len)
 {
     CHECK_LEN(len, 16, NULL);
@@ -439,6 +774,59 @@ d_forced_registration_decode(const uint8_t *data, int len)
     return tsdu;
 }
 
+static tsdu_d_ech_activation_t * d_ech_activation_decode(const uint8_t *data, int len)
+{
+    tsdu_d_ech_activation_t *tsdu = tsdu_create(tsdu_d_ech_activation_t, 0);
+    if (!tsdu) {
+	return NULL;
+    }
+    CHECK_LEN(len, 9, tsdu);
+
+    activation_mode_decode(&tsdu->activation_mode, data[1]);
+    tsdu->group_id              = get_bits(12, data + 1, 4);
+    cell_id_decode1(&tsdu->cell_id, data + 3);
+    tsdu->channel_id            = get_bits(12, data + 4, 4);
+    tsdu->u_ch_scrambling       = get_bits(8,  data + 6, 0);
+    tsdu->d_ch_scrambling       = get_bits(8,  data + 7, 0);
+    tsdu->key_reference._data   = get_bits(8,  data + 8, 0);
+    tsdu->has_addr_tti = false;
+    if (len >= 12) {
+        // FIXME: proper IEI handling
+        uint8_t iei = get_bits(8, data + 9, 0);
+        if (iei != IEI_TTI) {
+            LOG(WTF, "expected IEI_TTI got %d", iei);
+        } else {
+            tsdu->has_addr_tti = true;
+            addr_parse(&tsdu->addr_tti, &data[10], 0);
+        }
+    }
+
+    if (len > 12) {
+        LOG(WTF, "unused bytes (%d)", len);
+    }
+
+    return tsdu;
+}
+
+static tsdu_d_emergency_notification_t * d_emergency_notification_decode(const uint8_t *data, int len)
+{
+    tsdu_d_emergency_notification_t *tsdu = tsdu_create(tsdu_d_emergency_notification_t, 0);
+    if (!tsdu) {
+	return NULL;
+    }
+
+    CHECK_LEN(len, 8, tsdu);
+
+    const uint8_t *adr_data = &data[1];
+    if (address_decode(&tsdu->calling_adr, &adr_data)) {
+        LOG(ERR, "Only single address is supported in calling_adr");
+    }
+
+    cell_id_decode1(&tsdu->cell_id, data + 6);
+
+    return tsdu;
+}
+	
 static tsdu_d_group_activation_t *
 d_group_activation_decode(const uint8_t *data, int len)
 {
@@ -587,10 +975,13 @@ static tsdu_d_group_list_t *d_group_list_decode(const uint8_t *data, int len)
                 if (zero != 0) {
                     LOG(WTF, "nonzero padding in talk group-1 (%d)", zero);
                 }
+		/* // deprecated : no more zero padding for the first 4 bytes
                 uint8_t padding                     = get_bits(4, data + 2, 0);
-                if (padding != 0) {
+		if (padding != 0) {
                     LOG(WTF, "nonzero padding in talk group-2 (%d)", padding);
                 }
+		*/
+                tsdu->group[i].tkg_parameters.mbn   = get_bits(1, data + 2, 3);
                 tsdu->group[i].neighbouring_cell    = get_bits(12, data + 2, 4);
                 data += 4;
             }
@@ -851,6 +1242,21 @@ static tsdu_d_registration_ack_t *d_registration_ack_decode(const uint8_t *data,
         };
     }
 
+    if (len >= 18) {
+        tsdu->iei_ddch_sub      = data[16];
+        tsdu->nb_subscription   = get_bits(4, data + 17, 0);
+        for (int i = 0; i < tsdu->nb_subscription; ++i) {
+            tsdu->sub_appli_num[i]     = get_bits(4, &data[18 + 5*i], 0);
+            tsdu->subscription_info[i] = get_bits(4, &data[18 + 5*i], 4);
+            tsdu->cause[i]             = data[19 + 5*i];
+            tsdu->ddch_number[i]       = get_bits(4, &data[20 + 5*i], 0); // DDCH logical number (sur 4 bits)
+            tsdu->access_profile[i]    = get_bits(4, &data[20 + 5*i], 4);
+            tsdu->first_radio_slot[i]  = get_bits(16, &data[21 + 5*i], 0);
+        }
+    } else {
+        tsdu->iei_ddch_sub      = 0; //TODO is there a best value to indicate that there is no subscription?
+        tsdu->nb_subscription   = 0;
+    }
     return tsdu;
 }
 
@@ -968,6 +1374,27 @@ static tsdu_d_data_end_t *d_data_end_decode(const uint8_t *data, int len)
 
     return tsdu;
 }
+
+static tsdu_d_functional_short_data_t *d_functional_short_data_decode(const uint8_t *data, int len)
+{
+    if (len - 1 > SIZEOF(tsdu_d_functional_short_data_t, data)) {
+        LOG(WTF, "Message too large %d > %d",
+                len - 1, (int)SIZEOF(tsdu_d_functional_short_data_t, data));
+        return NULL;
+    }
+
+    tsdu_d_functional_short_data_t *tsdu = tsdu_create(tsdu_d_functional_short_data_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+
+    tsdu->data_len = len - 1;
+    memcpy(tsdu->data, &data[1], tsdu->data_len);
+
+    return tsdu;
+}
+
+
 
 static tsdu_d_datagram_notify_t *d_datagram_notify_decode(const uint8_t *data, int len)
 {
@@ -1116,6 +1543,63 @@ static tsdu_d_call_connect_t *d_call_connect_decode(const uint8_t *data, int len
     return tsdu;
 }
 
+
+static tsdu_d_periodic_access_subscription_ack_t *d_periodic_access_subscription_ack_decode(const uint8_t *data, int len) // NEW
+{
+    tsdu_d_periodic_access_subscription_ack_t *tsdu = tsdu_create(tsdu_d_periodic_access_subscription_ack_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+    //CHECK_LEN(len, 7, tsdu); //TODO to check
+
+    tsdu->iei_ddch_sub     = data[1];
+    tsdu->sub_appli_num    = get_bits(4, &data[2], 0);
+    tsdu->subscription_info= get_bits(4, &data[2], 4); // b2b1 = DDCH subscription, b4=0, b3=TYPE_ENC (=0: periodic messages not ciphered by network, 1= ciphered)
+    tsdu->cause            = data[3];
+    tsdu->ddch_number      = get_bits(4, &data[4], 0); // DDCH logical number (sur 4 bits)
+    tsdu->access_profile   = get_bits(4, &data[4], 4); // period index of the message emission (0xF not significant), sur 4 bits
+    tsdu->first_radio_slot = get_bits(16, &data[5], 0);// first DDCH slot in DDCH multiframe, 2 bytes, 0xFFFF if not significant
+
+    return tsdu;
+
+}
+
+
+static tsdu_d_periodic_access_subscription_nak_t *d_periodic_access_subscription_nak_decode(const uint8_t *data, int len) // NEW
+{
+    tsdu_d_periodic_access_subscription_nak_t *tsdu = tsdu_create(tsdu_d_periodic_access_subscription_nak_t, 0);
+    if (!tsdu) {
+        return NULL;
+    }
+    //CHECK_LEN(len, 4, tsdu); //TODO to check
+
+    tsdu->iei_ddch_sub     = data[1];
+    tsdu->sub_appli_num    = get_bits(4, &data[2], 0);
+    int zero               = get_bits(4, &data[2], 4);
+    if (zero != 0){
+	return NULL;
+    }
+    tsdu->cause            = data[3];
+
+    return tsdu;
+
+}
+
+static tsdu_d_tti_assignment_t *d_tti_assignment_decode(const uint8_t *data, int len) // NEW
+{
+    tsdu_d_tti_assignment_t *tsdu = tsdu_create(tsdu_d_tti_assignment_t, 0);
+    
+    if (!tsdu) {
+        return NULL;
+    }
+    
+    tsdu->z = get_bits(1, &data[0], 0);
+    tsdu->y = get_bits(3, &data[0], 1);
+    tsdu->x = get_bits(12, &data[0], 4);
+
+    return tsdu;
+}
+
 static tsdu_u_registration_req_t *u_registration_req_decode(const uint8_t *data, int len)
 {
     tsdu_u_registration_req_t *tsdu = tsdu_create(tsdu_u_registration_req_t, 0);
@@ -1215,6 +1699,16 @@ int tsdu_decode(const uint8_t *data, int len, tsdu_t **tsdu)
         return -1;
     }
 
+    // D_TTI_ASSIGNMENT cf. PAS 0001-3-2 v239 4.4.83, 5.3.84
+    // @TODO do not confuse with other CODOP containing only 2 bytes
+    // for now, only check 0x58 D_GROUP_IDLE, to be continued
+    if (len == 2 && data[0] != 0x58) {
+        *tsdu = (tsdu_t *)d_tti_assignment_decode(data, len);
+	const codop_t codop = 0xff; // arbitrary chosen, this value isn't in PAS
+	(*tsdu)->codop = codop; // normally d_tti_assignment has no codop number
+	return 0;
+    }
+
     const codop_t codop = get_bits(8, data, 0);
 
     *tsdu = NULL;
@@ -1291,13 +1785,29 @@ int tsdu_decode(const uint8_t *data, int len, tsdu_t **tsdu)
             *tsdu = (tsdu_t *)d_dch_open_decode(data, len);
             break;
 
+        case D_DDCH_DESCRIPTION: // NEW
+            *tsdu = (tsdu_t *)d_ddch_description_decode(data, len);
+            break;
+
+        case D_ECH_ACTIVATION: // NEW
+	    *tsdu = (tsdu_t *)d_ech_activation_decode(data, len);
+	    break;
+
         case D_ECH_OVERLOAD_ID:
             *tsdu = (tsdu_t *)d_ech_overload_id_decode(data, len);
             break;
 
+	case D_EMERGENCY_NOTIFICATION: // NEW
+	    *tsdu = (tsdu_t *)d_emergency_notification_decode(data, len);
+	    break;
+
         case D_EXPLICIT_SHORT_DATA:
             *tsdu = (tsdu_t *)d_explicit_short_data_decode(data, len);
             break;
+
+        case D_FUNCTIONAL_SHORT_DATA: // NEW
+            *tsdu = (tsdu_t *)d_functional_short_data_decode(data, len);
+            break;  
 
         case D_FORCED_REGISTRATION:
             *tsdu = (tsdu_t *)d_forced_registration_decode(data, len);
@@ -1371,11 +1881,19 @@ int tsdu_decode(const uint8_t *data, int len, tsdu_t **tsdu)
             *tsdu = (tsdu_t *)d_group_idle_decode(data, len);
             break;
 
+        case D_PERIODIC_ACCESS_SUBSCRIPTION_ACK: // NEW
+            *tsdu = (tsdu_t *)d_periodic_access_subscription_ack_decode(data, len);
+            break;
+
+        case D_PERIODIC_ACCESS_SUBSCRIPTION_NAK: // NEW
+            *tsdu = (tsdu_t *)d_periodic_access_subscription_nak_decode(data, len);
+            break;
+
         case U_AUTHENTICATION:
             *tsdu = (tsdu_t *)u_authentication_decode(data, len);
             break;
 
-        case U_CALL_CONNECT:
+        case U_CALL_CONNECT_U_CALL_SWITCH:
             *tsdu = (tsdu_t *)u_call_connect_decode(data, len);
             break;
 
@@ -1391,32 +1909,63 @@ int tsdu_decode(const uint8_t *data, int len, tsdu_t **tsdu)
             *tsdu = (tsdu_t *)u_terminate_decode(data, len);
             break;
 
+        case D_BROADCAST:
+	    *tsdu = (tsdu_t *)d_broadcast_decode(data, len);
+	    break;
+
+        case D_BROADCAST_NOTIFICATION:
+	    *tsdu = (tsdu_t *)d_broadcast_notification_decode(data, len);
+	    break;
+
+        case D_BROADCAST_WAITING:
+	    *tsdu = (tsdu_t *)d_broadcast_waiting_decode(data, len);
+	    break;
+
+        case D_CALL_SWITCH:
+	    *tsdu = (tsdu_t *)d_call_switch_decode(data, len);
+	    break;
+	
+        case D_DATA_DOWN_STATUS:
+	    *tsdu = (tsdu_t *)d_data_down_status_decode(data, len);
+	    break;
+	
+        case D_ECH_REJECT:
+	    *tsdu = (tsdu_t *)d_ech_reject_decode(data, len);
+	    break;
+	
+        case D_EMERGENCY_NAK:
+	    *tsdu = (tsdu_t *)d_emergency_nak_decode(data, len);
+	    break;
+	
+        case D_EXTENDED_STATUS:
+	    *tsdu = (tsdu_t *)d_extended_status_decode(data, len);
+	    break;
+	
+        case D_GROUP_END:
+	    *tsdu = (tsdu_t *)d_group_end_decode(data, len);
+	    break;
+        
+	case D_TRANSFER_NAK:
+	    *tsdu = (tsdu_t *)d_transfer_nak_decode(data, len);
+	    break;
+	
+        case D_INFORMATION_DELIVERY:
+	    *tsdu = (tsdu_t *)d_information_delivery_decode(data, len);
+	    break;
+
         case D_ACCESS_DISABLED:
         case D_BACK_CCH:
-        case D_BROADCAST:
-        case D_BROADCAST_NOTIFICATION:
-        case D_BROADCAST_WAITING:
         case D_CALL_ACTIVATION:
         case D_CALL_COMPOSITION:
         case D_CALL_END:
         case D_CALL_OVERLOAD_ID:
-        case D_CALL_SWITCH:
         case D_CALL_WAITING:
-        case D_DATA_DOWN_STATUS:
         case D_DATA_SERV:
         case D_DEVIATION_ON:
         case D_ECCH_DESCRIPTION:
-        case D_ECH_ACTIVATION:
-        case D_ECH_REJECT:
         case D_EMERGENCY_ACK:
-        case D_EMERGENCY_NAK:
-        case D_EMERGENCY_NOTIFICATION:
-        case D_EXTENDED_STATUS:
-        case D_FUNCTIONAL_SHORT_DATA:
-        case D_GROUP_END:
         case D_GROUP_OVERLOAD_ID:
         case D_CHANNEL_INIT:
-        case D_INFORMATION_DELIVERY:
         case D_OC_ACTIVATION:
         case D_OC_PAGING:
         case D_OC_REJECT:
@@ -1425,7 +1974,6 @@ int tsdu_decode(const uint8_t *data, int len, tsdu_t **tsdu)
         case D_SERVICE_DISABLED:
         case D_TRAFFIC_DISABLED:
         case D_TRAFFIC_ENABLED:
-        case D_TRANSFER_NAK:
         case U_ABORT:
         case U_CALL_ANSWER:
         case U_CALL_INTRUSION_ECH:
@@ -1463,4 +2011,6 @@ int tsdu_decode(const uint8_t *data, int len, tsdu_t **tsdu)
 
     return 0;
 }
+
+
 
