@@ -10,7 +10,7 @@
 typedef struct phys_ch_priv_t phys_ch_t;
 
 /**
-  Create new TETRAPOL physical cahnnel instance.
+  Create new TETRAPOL physical channel instance.
   @param band VHF or UHF
   @param phys_ch_type Radio channel type, control or traffic.
 

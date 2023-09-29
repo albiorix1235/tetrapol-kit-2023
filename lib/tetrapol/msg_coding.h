@@ -60,7 +60,7 @@ typedef union {
 
 typedef struct {
     uint8_t cna;
-    int len;    //< real lenght of address
+    int len;    //< real length of address
     union {
         rfsi_address_t rfsi;
         uint8_t pabx[15];
@@ -247,7 +247,8 @@ typedef union {
     struct {
         unsigned int exp : 1;
         unsigned int roam : 1;
-        unsigned int _reserved_00 : 2;
+	unsigned int zero : 1;
+        unsigned int ncs : 1;
         unsigned int bch : 1;
         unsigned int mode : 3;
     };
@@ -275,7 +276,7 @@ typedef union {
         unsigned int dc : 1;
         unsigned int sim : 1;
         unsigned int mux_type : 3;
-        unsigned int _reserved_0 : 1;
+        unsigned int ddch : 1;
         unsigned int atta : 1;
         unsigned int eccch : 1;
     };
@@ -365,10 +366,16 @@ enum {
     OCH_PARAMETERS_MBN_MULTI_BN = 1,
 };
 
+/// PAS 0001-3-2 v 239 5.3.51
 typedef struct {
     uint8_t add;
     uint8_t mbn;
 } och_parameters_t;
+
+/// PAS 0001-3-2 v239 5.3.80
+typedef struct {
+    uint8_t mbn;
+} tkg_parameters_t;
 
 /// PAS 0001-3-2 5.3.47
 enum {
