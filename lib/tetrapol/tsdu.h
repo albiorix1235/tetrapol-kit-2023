@@ -544,15 +544,6 @@ typedef struct {
     index_list_t index_list;
 } tsdu_d_group_list_t;
 
-/// PAS 0001-3-2 v239 4.4.49
-typedef struct {
-    tsdu_base_t base;
-    reference_list_t reference_list;
-    uint8_t nb_group;
-
-
-
-
 /// PAS 0001-3-2 4.4.49
 typedef struct {
     tsdu_base_t base;
