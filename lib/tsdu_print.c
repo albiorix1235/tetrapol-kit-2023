@@ -1512,13 +1512,13 @@ static void d_information_delivery_print(const tsdu_d_information_delivery_t *ts
     if (tsdu->nb_network_tkg != 0) {
 	LOGF("\t\tNETWORK TKG\n");
 	for (int i=0;i<tsdu->nb_network_tkg; i++) {
-		LOGF("\t\t\t\tTKG=%d\tCOVERAGE=%d\n", tsdu->network_tkg[i], tsdu->network_tkg_cov[i]);
+		LOGF("\t\t\t\tTKG=%d\tCOVERAGE_ID=%d\n", tsdu->network_tkg[i], tsdu->network_tkg_cov[i]);
         }
     }
     if (tsdu->nb_local_tkg != 0) {
 	LOGF("\t\tLOCAL TKG\n");
 	for (int i=0;i<tsdu->nb_local_tkg; i++) {
-		LOGF("\t\t\t\tTKG=%d\tCOVERAGE=%d\n", tsdu->local_tkg[i], tsdu->local_tkg_cov[i]);
+		LOGF("\t\t\t\tTKG=%d\tCOVERAGE_ID=%d\n", tsdu->local_tkg[i], tsdu->local_tkg_cov[i]);
         }
     }
 }

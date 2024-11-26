@@ -153,17 +153,25 @@ static tsdu_d_crisis_notification_t *d_crisis_notification_decode(
 
 static tsdu_d_broadcast_t *d_broadcast_decode(const uint8_t *data, int len)
 {
-    tsdu_d_broadcast_t *tsdu = tsdu_create(tsdu_d_broadcast_t, 0);
+    if (len < 5) {
+	LOG(WTF, "Too short");
+	return NULL;
+    }
+    len -= 5;
+    
+    tsdu_d_broadcast_t *tsdu = malloc(sizeof(tsdu_d_broadcast_t) + len);
+
     if (!tsdu) {
         return NULL;
     }
-    CHECK_LEN(len, 5, tsdu);
+
+    tsdu_base_set_nopts(&tsdu->base, 0);
 
     tsdu->call_priority         = get_bits(4, data + 1, 4);
     tsdu->message_reference     = data[2] | (data[3] << 8);
     tsdu->key_reference._data   = data[4];
-    tsdu->data_len = len - 5;
-    memcpy(tsdu->user_data, &data[5], tsdu->data_len);
+    tsdu->data_len = len;
+    memcpy(tsdu->user_data, data + 5, len);
 
     return tsdu;
 }
@@ -625,16 +633,19 @@ static tsdu_d_dch_open_t *d_dch_open_decode(const uint8_t *data, int len)
     return tsdu_create(tsdu_d_dch_open_t, 0);
 }
 
-
 static tsdu_d_ddch_description_t *d_ddch_description_decode(const uint8_t *data, int len)
 {
-    // CHECK_LEN(len, 8, NULL); //FIXME
 
-    tsdu_d_ddch_description_t *tsdu = tsdu_create(
-            tsdu_d_ddch_description_t, 0);
+    if (len < 5) {
+       LOG(WTF, "Data too short: %d < 5", len);
+       return NULL;
+    }
+    tsdu_d_ddch_description_t *tsdu = malloc(sizeof(tsdu_d_ddch_description_t));
     if (!tsdu) {
         return NULL;
     }
+
+    tsdu_base_set_nopts(&tsdu->base, 0);
 
     tsdu->nb_ddch = get_bits(4, &data[1], 0);
     if (tsdu->nb_ddch > 3) {
@@ -642,20 +653,23 @@ static tsdu_d_ddch_description_t *d_ddch_description_decode(const uint8_t *data,
         tsdu_destroy(&tsdu->base);
         return NULL;
     }
-    
-    // CHECK_LEN(len, 10 + (12 * tsdu->nb_ddch) / 12, tsdu); //FIXME
+    // expected total length (5, 9 or 12 bytes)
+    int expected_len = (12 + tsdu->nb_ddch * 28 + 7) / 8;
+    if (len < expected_len) {
+	LOG(WTF, "Data too short: %d < %d", len, expected_len);
+	tsdu_destroy(&tsdu->base);
+	return NULL;
+    }
+    // decoding
+    int start_pos_scr = (expected_len - 2*tsdu->nb_ddch) - 1;
     for (int i = 0; i < tsdu->nb_ddch; ++i) {
         tsdu->channel_id[i] = get_bits(12, &data[1], 4 + 12*i);
-        tsdu->u_ch_scrambling[i] = get_bits(8, &data[1], 4 + 12*tsdu->nb_ddch + 16*i);
-        tsdu->d_ch_scrambling[i] = get_bits(8, &data[1], 12 + 12*tsdu->nb_ddch + 16*i);
+	int pos_x = 1 + start_pos_scr + 2*i;
+        tsdu->u_ch_scrambling[i] = get_bits(8, &data[pos_x], 0);
+        tsdu->d_ch_scrambling[i] = get_bits(8, &data[pos_x+1], 0);
     }
-
     return tsdu;
-
 }
-
-
-
 
 static tsdu_d_data_request_t *d_data_request_decode(const uint8_t *data, int len)
 {
@@ -1787,6 +1801,11 @@ int tsdu_decode(const uint8_t *data, int len, tsdu_t **tsdu)
 
         case D_DDCH_DESCRIPTION: // NEW
             *tsdu = (tsdu_t *)d_ddch_description_decode(data, len);
+		if (!*tsdu) {
+		    LOG(ERR, "Decoding failed.");
+		} else {
+		    LOG(WTF, "Decoded tsdu: nb_ddch=%d", ((tsdu_d_ddch_description_t *)*tsdu)->nb_ddch);
+		}
             break;
 
         case D_ECH_ACTIVATION: // NEW
